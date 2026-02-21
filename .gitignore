@@ -145,3 +145,5 @@ error_reports/
 
 # Neon Echoes
 version.txt
+#游戏配置文件，不要提交进去啊
+game_config.json

@@ -588,12 +588,11 @@ class ANSIRenderer:
         #     logger.debug(f"音符绘制统计: 总数 {note_count}, 可见 {visible_count}")
     
     def draw_hud(self) -> None:
-        """绘制游戏顶部的HUD（平视显示器），显示分数、连击数和上一次判定结果 - 优化版本：减少临时对象创建"""
+        """绘制游戏顶部的HUD（平视显示器），显示分数、连击数 - 优化版本：减少临时对象创建"""
         # 获取要显示的信息
         score = self.game_state.score
         combo = self.game_state.combo
         max_combo = self.game_state.max_combo
-        judgement = self.game_state.judgement
         
         hud_y = 0
         
@@ -615,16 +614,6 @@ class ANSIRenderer:
         for i, char in enumerate(combo_text):
             if combo_x + i < self.screen_width:
                 self._set_char(hud_y, combo_x + i, char, combo_color)
-        
-        # 绘制判定结果 - 右侧
-        if judgement:
-            judgement_text = judgement.value
-            judgement_color_key = f'judgement_{judgement.value.lower()}'
-            judgement_color = self.COLOR_CODES.get(judgement_color_key, self.COLOR_CODES['reset'])
-            judgement_x = max(0, self.screen_width - len(judgement_text) - 1)
-            for i, char in enumerate(judgement_text):
-                if judgement_x + i < self.screen_width:
-                    self._set_char(hud_y, judgement_x + i, char, judgement_color)
         
         # 绘制调试计时器 - 最右侧（如果启用）
         if hasattr(self.game_state, 'debug_timer') and self.game_state.debug_timer:
@@ -658,6 +647,96 @@ class ANSIRenderer:
         color = self.COLOR_CODES['judgement_line']
         for i, char in enumerate(judgement_line):
             self._set_char(self.judgement_line_y, start_x + i, char, color)
+    
+    def draw_track_judgements(self) -> None:
+        """绘制每个轨道判定线下方的判定结果"""
+        # 检查game_state是否有轨道判定数据
+        if not hasattr(self.game_state, 'track_judgements') or not hasattr(self.game_state, 'track_judgement_times'):
+            return
+        
+        # 判定结果显示在判定线下方一行
+        judgement_y = self.judgement_line_y + 1
+        
+        # 检查是否在有效范围内
+        if judgement_y >= self.screen_height:
+            return
+        
+        current_time = self.game_state.current_time_ms
+        display_ms = getattr(self.game_state, 'track_judgement_display_ms', 500)
+        
+        # 为每个轨道绘制判定结果
+        for track_idx, track_pos in enumerate(self.track_positions):
+            if track_idx >= len(self.game_state.track_judgements):
+                break
+            
+            judgement = self.game_state.track_judgements[track_idx]
+            judgement_time = self.game_state.track_judgement_times[track_idx]
+            
+            # 检查判定结果是否在显示时间内
+            if judgement is None or (current_time - judgement_time) > display_ms:
+                continue
+            
+            # 获取判定结果文本和颜色
+            judgement_text = judgement.value
+            judgement_color_key = f'judgement_{judgement.value.lower()}'
+            judgement_color = self.COLOR_CODES.get(judgement_color_key, self.COLOR_CODES['reset'])
+            
+            # 计算居中位置
+            track_center = track_pos['center']
+            start_x = track_center - (len(judgement_text) // 2)
+            
+            # 绘制判定结果
+            for i, char in enumerate(judgement_text):
+                x_pos = start_x + i
+                # 确保在轨道范围内
+                if track_pos['left'] <= x_pos <= track_pos['right']:
+                    self._set_char(judgement_y, x_pos, char, judgement_color)
+    
+    def draw_key_bindings(self) -> None:
+        """绘制判定线下方的键位提示"""
+        # 定义每个轨道的键位（与main_ansi.py中的key_mapping对应）
+        track_keys = [
+            ['Q', 'A', 'Z'],
+            ['W', 'S', 'X'],
+            ['E', 'D', 'C'],
+            ['R', 'F', 'V'],
+            ['T', 'G', 'B'],
+            ['Y', 'H', 'N'],
+            ['U', 'J', 'M'],
+            ['I', 'K', ','],
+            ['O', 'L', '.'],
+            ['P', ';', "'"]
+        ]
+        
+        # 键位显示在判定线下方两行
+        keys_y = self.judgement_line_y + 2
+        
+        # 检查是否在有效范围内
+        if keys_y >= self.screen_height:
+            return
+        
+        # 为每个轨道绘制键位
+        color = self.COLOR_CODES['foreground']
+        for track_idx, track_pos in enumerate(self.track_positions):
+            if track_idx >= len(track_keys):
+                break
+            
+            # 获取该轨道的三个键
+            keys = track_keys[track_idx]
+            
+            # 计算键位字符串（三个键用/分隔）
+            keys_text = '/'.join(keys)
+            
+            # 计算居中位置
+            track_center = track_pos['center']
+            start_x = track_center - (len(keys_text) // 2)
+            
+            # 绘制键位
+            for i, char in enumerate(keys_text):
+                x_pos = start_x + i
+                # 确保在轨道范围内
+                if track_pos['left'] <= x_pos <= track_pos['right']:
+                    self._set_char(keys_y, x_pos, char, color)
     
     def draw_text_events(self) -> None:
         """绘制当前应该显示的文字事件"""
@@ -724,6 +803,8 @@ class ANSIRenderer:
             self.draw_background()
             self.draw_notes()
             self.draw_judgement_line()
+            self.draw_track_judgements()
+            self.draw_key_bindings()
             self.draw_text_events()
             self.draw_hud()
             

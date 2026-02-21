@@ -396,6 +396,11 @@ class GameState:
         self.chart: Dict[str, Any] = {}  # 已加载的谱面数据
         self.chart_end_time_ms = None  # 谱面结束符的时间戳
         
+        # 每个轨道的判定结果和判定时间（用于显示）
+        self.track_judgements: List[Optional[JudgementResult]] = [None] * self.num_tracks
+        self.track_judgement_times: List[int] = [0] * self.num_tracks
+        self.track_judgement_display_ms = 500  # 判定结果显示时长（毫秒）
+        
         # 判定系统
         self.judgement_system = JudgementSystem(difficulty)
         
@@ -951,6 +956,12 @@ class GameState:
         self.judgement_system.judgement_counts[result] += 1
         self.judgement = result
         
+        # 更新每个轨道的判定结果和判定时间
+        for track_idx in note.tracks:
+            if 0 <= track_idx < self.num_tracks:
+                self.track_judgements[track_idx] = result
+                self.track_judgement_times[track_idx] = self.current_time_ms
+        
         # 更新缓存标记
         self._update_notes_cache = True
         
@@ -983,6 +994,12 @@ class GameState:
         # 更新判定计数
         self.judgement_system.judgement_counts[JudgementResult.MISS] += 1
         self.judgement = JudgementResult.MISS
+        
+        # 更新每个轨道的判定结果和判定时间
+        for track_idx in note.tracks:
+            if 0 <= track_idx < self.num_tracks:
+                self.track_judgements[track_idx] = JudgementResult.MISS
+                self.track_judgement_times[track_idx] = self.current_time_ms
         
         # 更新缓存标记
         self._update_notes_cache = True
