@@ -22,10 +22,10 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QSlider, QFileDialog, QLineEdit, QComboBox,
     QSpinBox, QDoubleSpinBox, QTextEdit, QSplitter, QFrame, QMessageBox,
-    QGroupBox
+    QGroupBox, QMenu, QInputDialog
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QThread, QUrl
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QKeyEvent
+from PySide6.QtGui import QPainter, QColor, QPen, QFont, QKeyEvent, QMouseEvent
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 # 配置日志
@@ -75,12 +75,23 @@ class Note:
 class ChartPreviewWidget(QWidget):
     """谱面预览控件"""
 
+    # 信号定义
+    note_right_clicked = Signal(Note, int)  # 音符右击信号 (note, note_index)
+    track_right_clicked = Signal(int, int)  # 轨道右击信号 (track_index, time_ms)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.notes: List[Note] = []
         self.current_time_ms = 0
         self.num_tracks = 10
         self.setMinimumHeight(300)
+        self.setMouseTracking(True)
+
+        # 用于拖拽放置
+        self._dragging = False
+        self._drag_start_y = 0
+        self._drag_track = -1
+        self._drag_note_type = "normal"
 
     def set_notes(self, notes: List[Note]):
         self.notes = notes
@@ -89,6 +100,73 @@ class ChartPreviewWidget(QWidget):
     def set_current_time(self, time_ms: int):
         self.current_time_ms = time_ms
         self.update()
+
+    def _get_track_at_x(self, x: int) -> int:
+        """根据X坐标获取轨道索引"""
+        track_width = self.width() / self.num_tracks
+        track = int(x / track_width)
+        return max(0, min(track, self.num_tracks - 1))
+
+    def _get_time_at_y(self, y: int) -> int:
+        """根据Y坐标获取时间（毫秒）"""
+        height = self.height()
+        center_y = height // 2
+        preview_duration = 5000
+
+        # 计算相对于判定线的位置
+        progress = (center_y - y) / (center_y - 30)
+        time_diff = int(progress * preview_duration)
+        return self.current_time_ms + time_diff
+
+    def _get_note_at_pos(self, x: int, y: int) -> tuple:
+        """获取指定位置的音符和索引"""
+        width = self.width()
+        height = self.height()
+        track_width = width / self.num_tracks
+        center_y = height // 2
+        preview_duration = 5000
+
+        track = self._get_track_at_x(x)
+        track_x = int(track * track_width)
+        note_width = int(track_width * 0.8)
+        note_x_start = track_x + int(track_width * 0.1)
+        note_x_end = note_x_start + note_width
+
+        if not (note_x_start <= x <= note_x_end):
+            return None, -1
+
+        for i, note in enumerate(self.notes):
+            if note.track != track:
+                continue
+
+            time_diff = note.time_ms - self.current_time_ms
+            if abs(time_diff) > preview_duration:
+                continue
+
+            progress = time_diff / preview_duration
+            note_y = center_y - int(progress * (center_y - 30))
+
+            if note_y <= y <= note_y + 15:
+                return note, i
+
+        return None, -1
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.RightButton:
+            x = int(event.position().x())
+            y = int(event.position().y())
+
+            # 先检查是否点击了音符
+            note, note_index = self._get_note_at_pos(x, y)
+            if note:
+                self.note_right_clicked.emit(note, note_index)
+            else:
+                # 点击轨道，准备放置音符
+                track = self._get_track_at_x(x)
+                time_ms = self._get_time_at_y(y)
+                self.track_right_clicked.emit(track, time_ms)
+
+        super().mousePressEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -145,6 +223,12 @@ class ChartPreviewWidget(QWidget):
                 painter.setPen(pen)
                 painter.drawRect(note_x, note_y, note_width, 15)
 
+                # 绘制hold音符的持续时间
+                if note.type == "hold" and note.duration > 0:
+                    hold_height = int((note.duration / preview_duration) * (center_y - 30))
+                    hold_color = QColor(50, 50, 200, 128)
+                    painter.fillRect(note_x, note_y, note_width, hold_height, hold_color)
+
         # 绘制轨道标签
         painter.setPen(QColor(200, 200, 200))
         font = QFont("Arial", 10)
@@ -187,6 +271,12 @@ class ChartEditorWindow(QMainWindow):
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_label.setStyleSheet("font-size: 24px; font-weight: bold; color: #00ffaa; padding: 10px;")
         main_layout.addWidget(title_label)
+
+        # 提示标签
+        hint_label = QLabel("💡 提示: 右击轨道放置音符 | 右击音符编辑 | 录制模式使用 QWERTYUIOP 按键")
+        hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint_label.setStyleSheet("font-size: 12px; color: #aaaaaa; padding: 5px;")
+        main_layout.addWidget(hint_label)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         main_layout.addWidget(splitter)
@@ -271,6 +361,12 @@ class ChartEditorWindow(QMainWindow):
 
         play_layout.addWidget(QLabel("|"))
 
+        self.load_btn = QPushButton("📂 导入谱面")
+        self.load_btn.clicked.connect(self._load_chart)
+        self.load_btn.setMinimumHeight(40)
+        self.load_btn.setStyleSheet("background-color: #663366; font-size: 14px;")
+        play_layout.addWidget(self.load_btn)
+
         self.save_btn = QPushButton("💾 保存谱面")
         self.save_btn.clicked.connect(self._save_chart)
         self.save_btn.setMinimumHeight(40)
@@ -306,6 +402,8 @@ class ChartEditorWindow(QMainWindow):
         preview_layout.addWidget(preview_label)
 
         self.preview_widget = ChartPreviewWidget()
+        self.preview_widget.note_right_clicked.connect(self._on_note_right_clicked)
+        self.preview_widget.track_right_clicked.connect(self._on_track_right_clicked)
         preview_layout.addWidget(self.preview_widget, 1)
 
         # 音符列表
@@ -392,6 +490,182 @@ class ChartEditorWindow(QMainWindow):
         )
         if file_path:
             self._write_chart(file_path)
+
+    def _load_chart(self):
+        """导入谱面文件"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "导入谱面", "", "谱面文件 (*.chart)"
+        )
+        if not file_path:
+            return
+
+        try:
+            self._parse_chart_file(file_path)
+            QMessageBox.information(self, "成功", f"谱面已导入:\n{file_path}")
+            logger.info(f"谱面已导入: {file_path}")
+        except Exception as e:
+            logger.error(f"导入谱面失败: {e}")
+            QMessageBox.critical(self, "错误", f"导入失败:\n{str(e)}")
+
+    def _parse_chart_file(self, file_path: str):
+        """解析谱面文件"""
+        import re
+
+        with open(file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        # 清空现有音符
+        self.notes.clear()
+
+        current_time_ms = 0
+        audio_file_name = None
+
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+
+            # 结束标记
+            if line == '&':
+                break
+
+            # 解析时间
+            time_match = re.match(r'^(\d+:\d+(?::\d+)?)$', line)
+            if time_match:
+                time_str = time_match.group(1)
+                parts = time_str.split(':')
+                if len(parts) == 2:
+                    minutes, seconds = map(int, parts)
+                    milliseconds = 0
+                elif len(parts) == 3:
+                    minutes, seconds, milliseconds = map(int, parts)
+                else:
+                    continue
+                current_time_ms = minutes * 60 * 1000 + seconds * 1000 + milliseconds
+                continue
+
+            # 解析元数据
+            if line.startswith('name-'):
+                self.name_edit.setText(line[5:].strip())
+                continue
+
+            if line.startswith('maker-'):
+                maker_text = line[6:].strip()
+                # 处理可能包含 '-' 的作者名
+                if '-' in maker_text:
+                    maker = maker_text.split('-', 1)[0].strip()
+                else:
+                    maker = maker_text
+                self.maker_edit.setText(maker)
+                continue
+
+            if line.startswith('level-'):
+                parts = line[6:].split('-', 1)
+                try:
+                    self.level_spin.setValue(int(parts[0]))
+                    if len(parts) > 1:
+                        difficulty = parts[1].strip().upper()
+                        index = self.difficulty_combo.findText(difficulty)
+                        if index >= 0:
+                            self.difficulty_combo.setCurrentIndex(index)
+                except ValueError:
+                    pass
+                continue
+
+            if line.startswith('audio-'):
+                audio_file_name = line[6:].strip()
+                continue
+
+            if line.startswith('speed-') or line.startswith('line-'):
+                try:
+                    if line.startswith('speed-'):
+                        speed = float(line[6:])
+                    else:
+                        speed = float(line[5:])
+                    self.speed_spin.setValue(speed)
+                except ValueError:
+                    pass
+                continue
+
+            # 解析音符
+            note = self._parse_note_line(line, current_time_ms)
+            if note:
+                self.notes.append(note)
+
+        # 尝试自动匹配音频文件
+        if audio_file_name and audio_file_name.upper() != 'N':
+            self._try_load_audio(audio_file_name, file_path)
+
+        # 更新UI
+        self._update_notes_text()
+        self.preview_widget.set_notes(self.notes)
+
+    def _parse_note_line(self, line: str, time_ms: int) -> Optional[Note]:
+        """解析音符行"""
+        # tab音符: tab-1
+        if line.startswith('tab-'):
+            parts = line[4:].split('-')
+            try:
+                track = int(parts[0]) - 1  # 转换为0-based
+                if 0 <= track < 10:
+                    return Note(time_ms, track, "normal")
+            except ValueError:
+                pass
+
+        # hold音符: hold-1-500
+        elif line.startswith('hold-'):
+            parts = line[5:].split('-')
+            try:
+                track = int(parts[0]) - 1
+                duration = int(parts[1]) if len(parts) > 1 else 0
+                if 0 <= track < 10:
+                    note = Note(time_ms, track, "hold")
+                    note.duration = duration
+                    return note
+            except (ValueError, IndexError):
+                pass
+
+        # drag音符: drag-1
+        elif line.startswith('drag-'):
+            parts = line[5:].split('-')
+            try:
+                track = int(parts[0]) - 1
+                if 0 <= track < 10:
+                    return Note(time_ms, track, "drag")
+            except ValueError:
+                pass
+
+        return None
+
+    def _try_load_audio(self, audio_file_name: str, chart_file_path: str):
+        """尝试加载音频文件"""
+        chart_dir = Path(chart_file_path).parent
+        audio_dir = chart_dir.parent / 'audio'
+
+        # 可能的音频文件路径
+        possible_paths = [
+            audio_dir / audio_file_name,
+            chart_dir / audio_file_name,
+            Path(audio_file_name),
+        ]
+
+        # 尝试不同的扩展名
+        extensions = ['', '.mp3', '.wav', '.ogg', '.flac']
+
+        for path in possible_paths:
+            for ext in extensions:
+                full_path = path.with_suffix(ext) if ext else path
+                if full_path.exists():
+                    self.audio_file = str(full_path)
+                    self.audio_file_label.setText(full_path.name)
+                    self.media_player.setSource(QUrl.fromLocalFile(self.audio_file))
+                    logger.info(f"自动加载音频文件: {self.audio_file}")
+                    return
+
+        # 如果没找到，只显示文件名
+        self.audio_file_label.setText(f"未找到: {audio_file_name}")
+        self.audio_file_label.setStyleSheet("color: #ff6666;")
+        logger.warning(f"未找到音频文件: {audio_file_name}")
 
     def _write_chart(self, file_path: str):
         try:
@@ -498,6 +772,161 @@ class ChartEditorWindow(QMainWindow):
             logger.debug(f"添加音符: 轨道 {track_index + 1}, 时间 {position}ms")
 
         super().keyPressEvent(event)
+
+    def _on_track_right_clicked(self, track: int, time_ms: int):
+        """处理轨道右击事件 - 放置新音符"""
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2d2d3d;
+                color: #ffffff;
+                border: 1px solid #555566;
+            }
+            QMenu::item:selected {
+                background-color: #444455;
+            }
+        """)
+
+        # 添加音符类型选项
+        action_tab = menu.addAction(f"🎵 放置 Tab 音符 (轨道 {track + 1})")
+        action_hold = menu.addAction(f"🎹 放置 Hold 音符 (轨道 {track + 1})")
+        action_drag = menu.addAction(f"✋ 放置 Drag 音符 (轨道 {track + 1})")
+
+        action = menu.exec(self.cursor().pos())
+
+        if action == action_tab:
+            self._place_note(track, time_ms, "normal")
+        elif action == action_hold:
+            self._place_hold_note(track, time_ms)
+        elif action == action_drag:
+            self._place_note(track, time_ms, "drag")
+
+    def _place_note(self, track: int, time_ms: int, note_type: str, duration: int = 0):
+        """放置音符"""
+        note = Note(time_ms, track, note_type)
+        note.duration = duration
+        self.notes.append(note)
+        self._update_notes_text()
+        self.preview_widget.set_notes(self.notes)
+        logger.info(f"放置音符: 类型={note_type}, 轨道={track + 1}, 时间={time_ms}ms, 长度={duration}ms")
+
+    def _place_hold_note(self, track: int, time_ms: int):
+        """放置hold音符，弹出对话框设置长度"""
+        duration, ok = QInputDialog.getInt(
+            self, "设置Hold长度", "请输入Hold音符的持续时间(毫秒):",
+            500, 50, 10000, 50
+        )
+        if ok:
+            self._place_note(track, time_ms, "hold", duration)
+
+    def _on_note_right_clicked(self, note: Note, note_index: int):
+        """处理音符右击事件 - 编辑音符"""
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2d2d3d;
+                color: #ffffff;
+                border: 1px solid #555566;
+            }
+            QMenu::item:selected {
+                background-color: #444455;
+            }
+        """)
+
+        # 显示当前音符信息
+        info_action = menu.addAction(f"当前: {note.type.upper()} | 轨道 {note.track + 1} | {note.time_ms}ms")
+        info_action.setEnabled(False)
+        menu.addSeparator()
+
+        # 更改类型
+        change_menu = menu.addMenu("🔄 更改类型")
+        action_to_tab = change_menu.addAction("更改为 Tab")
+        action_to_hold = change_menu.addAction("更改为 Hold")
+        action_to_drag = change_menu.addAction("更改为 Drag")
+
+        # 编辑选项
+        menu.addSeparator()
+        action_edit_time = menu.addAction("⏱️ 修改时间")
+        if note.type == "hold":
+            action_edit_duration = menu.addAction("📏 修改Hold长度")
+        action_delete = menu.addAction("🗑️ 删除音符")
+
+        action = menu.exec(self.cursor().pos())
+
+        if action == action_to_tab:
+            self._change_note_type(note_index, "normal")
+        elif action == action_to_hold:
+            self._change_note_type_to_hold(note_index)
+        elif action == action_to_drag:
+            self._change_note_type(note_index, "drag")
+        elif action == action_edit_time:
+            self._edit_note_time(note_index)
+        elif note.type == "hold" and action == action_edit_duration:
+            self._edit_note_duration(note_index)
+        elif action == action_delete:
+            self._delete_note(note_index)
+
+    def _change_note_type(self, note_index: int, new_type: str):
+        """更改音符类型"""
+        if 0 <= note_index < len(self.notes):
+            old_type = self.notes[note_index].type
+            self.notes[note_index].type = new_type
+            if new_type != "hold":
+                self.notes[note_index].duration = 0
+            self._update_notes_text()
+            self.preview_widget.set_notes(self.notes)
+            logger.info(f"音符类型更改: {old_type} -> {new_type}")
+
+    def _change_note_type_to_hold(self, note_index: int):
+        """更改音符类型为hold，并设置长度"""
+        duration, ok = QInputDialog.getInt(
+            self, "设置Hold长度", "请输入Hold音符的持续时间(毫秒):",
+            500, 50, 10000, 50
+        )
+        if ok:
+            if 0 <= note_index < len(self.notes):
+                old_type = self.notes[note_index].type
+                self.notes[note_index].type = "hold"
+                self.notes[note_index].duration = duration
+                self._update_notes_text()
+                self.preview_widget.set_notes(self.notes)
+                logger.info(f"音符类型更改: {old_type} -> hold, 长度={duration}ms")
+
+    def _edit_note_time(self, note_index: int):
+        """修改音符时间"""
+        if 0 <= note_index < len(self.notes):
+            note = self.notes[note_index]
+            new_time, ok = QInputDialog.getInt(
+                self, "修改时间", "请输入新的时间(毫秒):",
+                note.time_ms, 0, 9999999, 10
+            )
+            if ok:
+                note.time_ms = new_time
+                self._update_notes_text()
+                self.preview_widget.set_notes(self.notes)
+                logger.info(f"音符时间修改: {note.time_ms}ms")
+
+    def _edit_note_duration(self, note_index: int):
+        """修改hold音符长度"""
+        if 0 <= note_index < len(self.notes):
+            note = self.notes[note_index]
+            new_duration, ok = QInputDialog.getInt(
+                self, "修改Hold长度", "请输入新的持续时间(毫秒):",
+                note.duration, 50, 10000, 50
+            )
+            if ok:
+                note.duration = new_duration
+                self._update_notes_text()
+                self.preview_widget.set_notes(self.notes)
+                logger.info(f"Hold音符长度修改: {new_duration}ms")
+
+    def _delete_note(self, note_index: int):
+        """删除音符"""
+        if 0 <= note_index < len(self.notes):
+            note = self.notes.pop(note_index)
+            self._update_notes_text()
+            self.preview_widget.set_notes(self.notes)
+            logger.info(f"删除音符: 类型={note.type}, 轨道={note.track + 1}, 时间={note.time_ms}ms")
 
 
 def main():
