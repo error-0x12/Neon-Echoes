@@ -74,9 +74,14 @@ class ThreadedInputHandler:
         self._is_windows = (os.name == 'nt')
 
         # Linux: 按键自动释放超时 (秒)
-        # 如果按键在此时间内未再次出现，则认为已释放
-        # 设置为 60ms，略大于典型终端按键重复间隔 (~33ms)
-        self._linux_key_release_timeout = 0.06
+        # Linux 终端无法检测按键释放事件，依赖终端按键重复机制：
+        # 按住键时终端以 ~30Hz (~33ms间隔) 重复发送字符，松手后停止。
+        # 如果字符在超时时间内未再次出现，则判定为释放。
+        #
+        # 注意：需要终端启用按键重复 (xset r on)，否则长按无效。
+        self._linux_key_release_timeout_menu = 0.06     # 菜单: 60ms，保证导航响应
+        self._linux_key_release_timeout_gameplay = 0.12  # 游戏: 120ms，容忍慢速按键重复
+        self._linux_key_release_timeout = self._linux_key_release_timeout_menu
 
         logger.info(f"ThreadedInputHandler 初始化完成 (平台: {'Windows' if self._is_windows else 'Linux/macOS'})")
 
@@ -102,7 +107,7 @@ class ThreadedInputHandler:
 
     def set_game_state(self, state: str) -> None:
         """
-        设置游戏状态，动态调整轮询频率
+        设置游戏状态，动态调整轮询频率和按键释放超时
 
         Args:
             state: 'menu' 或 'gameplay'
@@ -111,10 +116,12 @@ class ThreadedInputHandler:
             self._game_state = state
             if state == 'gameplay':
                 self._current_interval = self._check_interval  # 120Hz
-                logger.debug("输入轮询切换到高频模式 (120Hz)")
+                self._linux_key_release_timeout = self._linux_key_release_timeout_gameplay
+                logger.debug("输入轮询切换到高频模式 (120Hz, 释放超时 120ms)")
             else:
                 self._current_interval = self._menu_check_interval  # 30Hz
-                logger.debug("输入轮询切换到低频模式 (30Hz)")
+                self._linux_key_release_timeout = self._linux_key_release_timeout_menu
+                logger.debug("输入轮询切换到低频模式 (30Hz, 释放超时 60ms)")
 
     # ═══════════════════════════════════════════════════════════════════
     # Windows 输入处理
