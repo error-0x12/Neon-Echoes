@@ -881,7 +881,7 @@ class ANSIRenderer:
             self._line_buffer[buffer_idx] = self.COLOR_CODES['reset']
             buffer_idx += 1
             if y < self.screen_height - 1:
-                self._line_buffer[buffer_idx] = '\n'
+                self._line_buffer[buffer_idx] = '\r\n'
                 buffer_idx += 1
             
             # 构建行字符串
