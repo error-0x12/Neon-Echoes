@@ -606,17 +606,20 @@ class NeonEchoes:
                     
                     # 处理输入事件（从多线程输入处理器）
                     # 获取所有待处理的输入事件
+                    # 处理输入事件（多线程输入处理器 - Windows）
                     while not self.input_handler.event_queue.empty():
                         try:
                             event = self.input_handler.event_queue.get_nowait()
                             if event.event_type == InputEvent.KEY_DOWN:
                                 self._handle_input(event.key)
-                                # 修复：处理输入后检查退出标志位
                                 if self._should_exit:
                                     break
                         except:
                             break
-                    
+
+                    # 注：Linux/macOS 输入现在由 ThreadedInputHandler 的
+                    # _input_loop_linux() 方法在后台线程中处理，
+                    # 不再需要在此处直接读取 stdin。
                     # 修复：再次检查退出标志位
                     if self._should_exit:
                         break
@@ -753,7 +756,10 @@ class NeonEchoes:
             if hasattr(self, 'input_handler'):
                 self.input_handler.stop()
             self.logger.info("Neon Echoes 结束")
-    
+#╭─────────╮
+#│ 此面向敌 │
+#╰─┬─────┬─╯
+# ╱       ╲
     def _handle_input(self, key: str) -> None:
         """
         处理用户输入
@@ -1023,6 +1029,7 @@ class NeonEchoes:
 
 
 def play_startup_animation(duration: float = 1.5) -> None:
+
     r"""
     播放启动动画 - 旋转字符 (/ - \ |)
     
@@ -1039,36 +1046,48 @@ def play_startup_animation(duration: float = 1.5) -> None:
     # 旋转字符序列
     spinner_chars = ['/', '-', '\\', '|']
     
-    # 获取终端尺寸以居中显示
+    # 获取终端尺寸以居中显示（跨平台）
     try:
         if os.name != 'nt':
-            rows, columns = os.popen('stty size', 'r').read().split()
-            screen_height, screen_width = int(rows), int(columns)
+            # Unix/Linux/macOS: 尝试 stty，失败则用 shutil
+            try:
+                with os.popen('stty size', 'r') as f:
+                    result = f.read().strip()
+                if result:
+                    rows, columns = result.split()
+                    screen_height, screen_width = int(rows), int(columns)
+                else:
+                    raise ValueError("stty size 返回空")
+            except Exception:
+                import shutil
+                ts = shutil.get_terminal_size()
+                screen_height, screen_width = ts.lines, ts.columns
         else:
+            # Windows: 使用 Win32 Console API
             import ctypes
             from ctypes import wintypes
-            
+
             kernel32 = ctypes.windll.kernel32
             handle = kernel32.GetStdHandle(-11)
-            
+
             class COORD(ctypes.Structure):
                 _fields_ = [("X", wintypes.SHORT), ("Y", wintypes.SHORT)]
-            
+
             class SMALL_RECT(ctypes.Structure):
                 _fields_ = [("Left", wintypes.SHORT), ("Top", wintypes.SHORT),
                            ("Right", wintypes.SHORT), ("Bottom", wintypes.SHORT)]
-            
+
             class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
                 _fields_ = [("dwSize", COORD), ("dwCursorPosition", COORD),
                            ("wAttributes", wintypes.WORD), ("srWindow", SMALL_RECT),
                            ("dwMaximumWindowSize", COORD)]
-            
+
             csbi = CONSOLE_SCREEN_BUFFER_INFO()
             kernel32.GetConsoleScreenBufferInfo(handle, ctypes.byref(csbi))
-            
+
             screen_height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1
             screen_width = csbi.srWindow.Right - csbi.srWindow.Left + 1
-    except:
+    except Exception:
         screen_height, screen_width = 40, 160
     
     # 计算居中位置
@@ -1113,29 +1132,33 @@ def main():
     # 解析命令行参数
     args = parser.parse_args()
     
-    # 设置非阻塞输入
-    if os.name != 'nt':  # Unix/Linux
+    # Unix/Linux: 设置终端为非规范模式，为 ANSI 渲染和输入处理做准备。
+    # 注意：ThreadedInputHandler 在启动后会将终端设为 raw 模式，
+    # 并在停止时恢复为当前设置。此处的 cbreak 设置作为中间层，
+    # 确保启动动画（input handler 启动前）能正常显示，
+    # 同时在 input handler 停止后提供安全的终端状态。
+    if os.name != 'nt':  # Unix/Linux/macOS
         import tty, termios
         old_settings = termios.tcgetattr(sys.stdin)
         tty.setcbreak(sys.stdin.fileno())
-    
+
     try:
         # 播放启动动画
         if not args.no_animation:
             play_startup_animation(duration=1.5)
-        
+
         # 创建并运行游戏
         use_ansi = not args.No_ANSI
         game = NeonEchoes(use_ansi=use_ansi)
-        
+
         # 如果指定了谱面ID，直接开始游戏
         if args.chart:
             game.start_with_chart(args.chart)
         else:
             game.run()
     finally:
-        # 恢复终端设置
-        if os.name != 'nt':  # Unix/Linux
+        # 恢复终端原始设置
+        if os.name != 'nt':  # Unix/Linux/macOS
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
 

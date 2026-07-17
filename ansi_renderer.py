@@ -133,49 +133,86 @@ class ANSIRenderer:
         }
     
     def _get_terminal_size(self) -> Tuple[int, int]:
-        """获取终端尺寸"""
+        """
+        获取终端尺寸（跨平台）。
+
+        尝试顺序:
+        1. Unix: stty size 命令
+        2. Windows: Win32 Console API
+        3. 通用回退: shutil.get_terminal_size()
+        4. 硬编码默认值
+        """
         logger.debug("获取终端尺寸...")
         try:
             if os.name != 'nt':
-                # Unix/Linux/Mac
-                rows, columns = os.popen('stty size', 'r').read().split()
-                size = (int(rows), int(columns))
-                logger.info(f"Unix/Linux/Mac 终端尺寸: {size[1]}x{size[0]}")
-                return size
+                # Unix/Linux/macOS: 使用 stty size
+                try:
+                    with os.popen('stty size', 'r') as f:
+                        result = f.read().strip()
+                    if result:
+                        rows, columns = result.split()
+                        size = (int(rows), int(columns))
+                        logger.info(f"Unix 终端尺寸 (stty): {size[1]}x{size[0]}")
+                        return size
+                except Exception:
+                    logger.debug("stty size 失败，尝试 shutil 回退")
+
+                # Unix 回退: 使用 Python 内置方法
+                import shutil
+                try:
+                    ts = shutil.get_terminal_size()
+                    size = (ts.lines, ts.columns)
+                    logger.info(f"Unix 终端尺寸 (shutil): {size[1]}x{size[0]}")
+                    return size
+                except Exception:
+                    pass
             else:
-                # Windows
-                import ctypes
-                from ctypes import wintypes
-                
-                kernel32 = ctypes.windll.kernel32
-                handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
-                
-                # 定义 CONSOLE_SCREEN_BUFFER_INFO 结构
-                class COORD(ctypes.Structure):
-                    _fields_ = [("X", wintypes.SHORT), ("Y", wintypes.SHORT)]
-                
-                class SMALL_RECT(ctypes.Structure):
-                    _fields_ = [("Left", wintypes.SHORT), ("Top", wintypes.SHORT),
-                               ("Right", wintypes.SHORT), ("Bottom", wintypes.SHORT)]
-                
-                class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
-                    _fields_ = [("dwSize", COORD), ("dwCursorPosition", COORD),
-                               ("wAttributes", wintypes.WORD), ("srWindow", SMALL_RECT),
-                               ("dwMaximumWindowSize", COORD)]
-                
-                csbi = CONSOLE_SCREEN_BUFFER_INFO()
-                kernel32.GetConsoleScreenBufferInfo(handle, ctypes.byref(csbi))
-                
-                # 计算窗口尺寸
-                rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1
-                columns = csbi.srWindow.Right - csbi.srWindow.Left + 1
-                size = (rows, columns)
-                logger.info(f"Windows 终端尺寸: {size[1]}x{size[0]}")
-                return size
-        except Exception as e:
-            # 如果获取失败，返回较大的默认值
-            logger.warning(f"获取终端尺寸失败: {e}, 使用默认值 160x40")
-            return 40, 160
+                # Windows: 使用 Windows API 获取实际终端尺寸
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+
+                    kernel32 = ctypes.windll.kernel32
+                    handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+
+                    class COORD(ctypes.Structure):
+                        _fields_ = [("X", wintypes.SHORT), ("Y", wintypes.SHORT)]
+
+                    class SMALL_RECT(ctypes.Structure):
+                        _fields_ = [("Left", wintypes.SHORT), ("Top", wintypes.SHORT),
+                                   ("Right", wintypes.SHORT), ("Bottom", wintypes.SHORT)]
+
+                    class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
+                        _fields_ = [("dwSize", COORD), ("dwCursorPosition", COORD),
+                                   ("wAttributes", wintypes.WORD), ("srWindow", SMALL_RECT),
+                                   ("dwMaximumWindowSize", COORD)]
+
+                    csbi = CONSOLE_SCREEN_BUFFER_INFO()
+                    kernel32.GetConsoleScreenBufferInfo(handle, ctypes.byref(csbi))
+
+                    rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1
+                    columns = csbi.srWindow.Right - csbi.srWindow.Left + 1
+                    size = (rows, columns)
+                    logger.info(f"Windows 终端尺寸: {size[1]}x{size[0]}")
+                    return size
+                except Exception:
+                    logger.debug("Win32 API 失败，尝试 shutil 回退")
+
+                    import shutil
+                    try:
+                        ts = shutil.get_terminal_size()
+                        size = (ts.lines, ts.columns)
+                        logger.info(f"Windows 终端尺寸 (shutil): {size[1]}x{size[0]}")
+                        return size
+                    except Exception:
+                        pass
+
+        except Exception:
+            pass
+
+        # 最终回退: 使用默认值
+        logger.warning("所有终端尺寸检测方法均失败，使用默认值 40x160")
+        return 40, 160
 
     def update_terminal_size(self) -> None:
         """更新终端尺寸"""
